@@ -14,6 +14,17 @@
 # https://stackoverflow.com/questions/48477130/find-area-of-overlapping-rectangles-in-python-cv2-with-a-raw-list-of-points
 # https://stackoverflow.com/questions/15424852/region-of-interest-opencv-python
 # https://stackoverflow.com/questions/16538774/dealing-with-contours-and-bounding-rectangle-in-opencv-2-4-python-2-7
+# https://stackoverflow.com/questions/43111029/how-to-find-the-average-colour-of-an-image-in-python-with-opencv
+# https://www.freedomvc.com/index.php/2021/07/05/contours-and-hierarchy/
+# https://www.pyimagesearch.com/2014/05/19/building-pokedex-python-comparing-shape-descriptors-opencv/
+# https://stackoverflow.com/a/54734716/1967693
+# https://docs.opencv.org/4.x/d9/d8b/tutorial_py_contours_hierarchy.html
+# https://answers.opencv.org/question/25912/split-contours-into-many-small-rectangles/
+# https://stackoverflow.com/questions/69214202/using-pytesseract-to-get-text-from-an-image
+# https://stackoverflow.com/questions/60110313/opencv-thresholding-adaptive-to-different-lightning-conditions
+# https://www.pyimagesearch.com/2021/05/12/adaptive-thresholding-with-opencv-cv2-adaptivethreshold/
+# https://stackoverflow.com/questions/68107172/opencv-output-of-adaptive-threshold
+# https://stackoverflow.com/questions/61461520/does-anyone-knows-the-meaning-of-output-of-image-to-data-image-to-osd-methods-o
 import pprint
 import pytesseract
 from pytesseract import Output
@@ -41,44 +52,144 @@ def normalize_images(images):
 
 def threshold_image(img_orig):
     """Grayscale image and apply Otsu's threshold"""
-    # grayscale
+    # Grayscale
     img_gray = cv2.cvtColor(img_orig, cv2.COLOR_BGR2GRAY)
-    # otsu's threshold
+    # Binary inverse and Otsu's threshold
     img_thresh = cv2.threshold(
         img_gray, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)[1]
 
     return img_thresh
 
 
-def mask_image(img, lowerb, upperb):
-    # highlight colour range
-    hsv_lower = [22, 30, 30]
-    hsv_upper = [45, 255, 255]
+def mask_image(img_src, lower, upper):
+    """Convert image from RGB to HSV and create a mask for given lower and upper boundaries."""
+    # RGB to HSV color space conversion
+    img_hsv = cv2.cvtColor(img_src, cv2.COLOR_BGR2HSV)
+    hsv_lower = np.array(lower, np.uint8)  # Lower HSV value
+    hsv_upper = np.array(upper, np.uint8)  # Upper HSV value
 
-    # rgb to HSV color spave conversion
-    img_hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
-    HSV_lower = np.array(hsv_lower, np.uint8)  # Lower HSV value
-    HSV_upper = np.array(hsv_upper, np.uint8)  # Upper HSV value
-    # Threshold
-    img_mask = cv2.inRange(img_hsv, HSV_lower, HSV_upper)
-    # output = cv2.bitwise_and(img_orig, img_orig, mask=mask)
+    # Color segmentation with lower and upper threshold ranges to obtain a binary image
+    img_mask = cv2.inRange(img_hsv, hsv_lower, hsv_upper)
+    # output = cv2.bitwise_and(img_src, img_src, mask=img_mask)
 
+    # Morphological transformations to remove small noise
     kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3))
-    img_mask = cv2.morphologyEx(img_mask, cv2.MORPH_OPEN, kernel, iterations=1)
+    img_mask = cv2.morphologyEx(
+        img_mask, cv2.MORPH_OPEN, kernel, iterations=1)
 
-    return img_mask
+    # Find highligted contour and fill them with white color
+    contours, hierarchy, = cv2.findContours(
+        img_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    # contours, hierarchy, = cv2.findContours(
+    #     img_mask, cv2.RETR_CCOMP, cv2.CHAIN_APPROX_SIMPLE)
+    for idx, c in enumerate(contours):
+        # if(hierarchy[0][idx][3] != -1):  # Discard contours that are holes
+        #     continue
+        cv2.drawContours(img_mask, contours, idx,
+                         (255, 255, 255), cv2.FILLED, 8, hierarchy)
+
+    return img_mask, contours, hierarchy
 
 
-def draw_ocr_rectangles(img, data):
+def draw_all_ocr_rectangles(img_result, data):
     n_boxes = len(data['level'])
 
     # draw rectangles for words
     for i in range(n_boxes):
         (x, y, w, h) = (data['left'][i], data['top']
                         [i], data['width'][i], data['height'][i])
-        cv2.rectangle(img, (x, y), (x + w, y + h), (0, 255, 0), 2)
+        cv2.rectangle(img_result, (x, y), (x + w, y + h), (0, 255, 0), 2)
 
-    return img
+    return img_result
+
+
+# def draw_contour_ocr_rectangles(img_mask, img_result, data):
+#     # find connected components
+#     contours, hierarchy, = cv2.findContours(
+#         img_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)
+#     n_boxes = len(data['level'])
+
+#     for i in range(n_boxes):
+#         (x, y, w, h) = (data['left'][i], data['top']
+#                         [i], data['width'][i], data['height'][i])
+#         rect_word = Rectangle(x, y, x+w, y+h)
+#         area_word = float((rect_word.xmax - rect_word.xmin)
+#                           * (rect_word.ymax - rect_word.ymin))
+#         for c in contours:
+#             x, y, w, h = cv2.boundingRect(c)
+#             rect_contour = Rectangle(x, y, x+w, y+h)
+#             area_intersect = intersect_area(rect_contour, rect_word)
+#             percent = area_intersect / area_word
+
+#             if (percent >= 0.5):
+#                 cv2.rectangle(img_result, (rect_word.xmin, rect_word.ymin),
+#                               (rect_word.xmax, rect_word.ymax), (0, 255, 0), 2)
+
+#     return img_result
+
+
+def draw_contour_rectangles(img_contour, img_result, contours, rect_width=10, rect_height=10, threshold_percentage=25):
+    """Draw small rectangles within the contour if the respective rectangle area exceeds the defined threshold percentage."""
+
+    # threshold for rectangle area
+    threshold = (rect_width * rect_height * threshold_percentage) / 100
+    # contours, hierarchy, = cv2.findContours(
+    #     img_mask, cv2.RETR_CCOMP, cv2.CHAIN_APPROX_SIMPLE)
+    # contours, hierarchy, = cv2.findContours(
+    #     img_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    for idx, c in enumerate(contours):
+        # if(hierarchy[0][idx][3] != -1):  # Discard contours that are holes
+        #     continue
+        # cv2.drawContours(img_mask, contours, idx,
+        #                  (255, 255, 255), cv2.FILLED, 8, hierarchy)
+        xmin, ymin, w, h = cv2.boundingRect(c)
+        xmax = xmin + w
+        ymax = ymin + h
+
+        # Scan the image with in bounding boxes
+        for x in range(xmin, xmax, rect_width):
+            for y in range(ymin, ymax, rect_height):
+                rect_roi = Rectangle(x, y, x+rect_width, y+rect_height)
+                img_roi = img_contour[y:y+rect_height, x:x+rect_width]
+
+                # count white pixels within region of interest
+                count = cv2.countNonZero(img_roi)
+
+                if count > threshold:
+                    cv2.rectangle(img_result, (rect_roi.xmin, rect_roi.ymin),
+                                  (rect_roi.xmax, rect_roi.ymax),
+                                  (255, 0, 0), 1, 8, 0)
+
+    return img_result
+
+
+def highlight_ocr(img_contour, img_result, data, threshold_percentage=25):
+    n_boxes = len(data['text'])
+    # contours, hierarchy, = cv2.findContours(
+    #     img_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+
+    # draw rectangles for words
+    for i in range(n_boxes):
+        (x, y, w, h) = (data['left'][i], data['top']
+                        [i], data['width'][i], data['height'][i])
+        rect_roi = Rectangle(x, y, x+w, y+h)
+        rect_threshold = (w * h * threshold_percentage) / 100
+
+        img_roi = img_contour[y:y+h, x:x+w]
+        count = cv2.countNonZero(img_roi)
+
+        if count > rect_threshold:
+            print("Level: {}; Block: {}; Paragraph: {}; Line: {}; Word: {}; Text: {}".format(
+                data['level'][i],
+                data['block_num'][i],
+                data['par_num'][i],
+                data['line_num'][i],
+                data['word_num'][i],
+                data['text'][i]))
+            cv2.rectangle(img_result, (rect_roi.xmin, rect_roi.ymin),
+                          (rect_roi.xmax, rect_roi.ymax), (0, 255, 0), 2)
+
+    return img_result
 
 
 def main(args):
@@ -92,128 +203,122 @@ def main(args):
 
     # ocr
     data_ocr = pytesseract.image_to_data(
-        img_thresh, lang='eng', config='--psm 11', output_type=Output.DICT)
-    n_boxes = len(data_ocr['level'])
+        img_thresh, lang='eng', config='--psm 6', output_type=Output.DICT)
 
     # draw all ocr rect
-    img_ocr = draw_ocr_rectangles(img_orig.copy(), data_ocr)
+    img_orig_all_ocr = draw_all_ocr_rectangles(img_orig.copy(), data_ocr)
 
     # highlight colour range
-    hsv_lowerb = [22, 30, 30]
-    hsv_upperb = [45, 255, 255]
+    hsv_lower = [22, 30, 30]
+    hsv_upper = [45, 255, 255]
 
-    img_mask = mask_image(img_orig, hsv_lowerb, hsv_upperb)
+    img_mask, contours, hierachy = mask_image(
+        img_orig, hsv_lower, hsv_upper)
 
-    # find connected components
-    contours, hierarchy, = cv2.findContours(
-        img_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)
+    img_orig_rects = draw_contour_rectangles(
+        img_mask, img_orig.copy(), contours)
 
-    # draw only highlighted ocr rects
-    img_ocr_highlight = img_orig.copy()
-    for i in range(n_boxes):
-        (x, y, w, h) = (data_ocr['left'][i], data_ocr['top']
-                        [i], data_ocr['width'][i], data_ocr['height'][i])
-        rect_word = Rectangle(x, y, x+w, y+h)
-        area_word = float((rect_word.xmax - rect_word.xmin)
-                          * (rect_word.ymax - rect_word.ymin))
-        for c in contours:
-            x, y, w, h = cv2.boundingRect(c)
-            rect_contour = Rectangle(x, y, x+w, y+h)
-            area_intersect = intersect_area(rect_contour, rect_word)
-            percent = area_intersect / area_word
+    img_orig_ocr = highlight_ocr(
+        img_mask, img_orig.copy(), data_ocr)
 
-            if (percent >= 0.5):
-                cv2.rectangle(img_ocr_highlight, (rect_word.xmin, rect_word.ymin),
-                              (rect_word.xmax, rect_word.ymax), (0, 255, 0), 2)
+    # # find connected components
+    # contours, hierarchy, = cv2.findContours(
+    #     img_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)
 
-    img_mask_highlight = img_orig.copy()
-    for c in contours:
-        x, y, w, h = cv2.boundingRect(c)
-        rect_contour = Rectangle(x, y, x+w, y+h)
-        cv2.rectangle(img_mask_highlight, (rect_contour.xmin, rect_contour.ymin),
-                      (rect_contour.xmax, rect_contour.ymax), (0, 255, 0), 2)
+    # # draw only highlighted ocr rects
+    # img_ocr_highlight = img_orig.copy()
+    # for i in range(n_boxes):
+    #     (x, y, w, h) = (data_ocr['left'][i], data_ocr['top']
+    #                     [i], data_ocr['width'][i], data_ocr['height'][i])
+    #     rect_word = Rectangle(x, y, x+w, y+h)
+    #     area_word = float((rect_word.xmax - rect_word.xmin)
+    #                       * (rect_word.ymax - rect_word.ymin))
+    #     for c in contours:
+    #         x, y, w, h = cv2.boundingRect(c)
+    #         rect_contour = Rectangle(x, y, x+w, y+h)
+    #         area_intersect = intersect_area(rect_contour, rect_word)
+    #         percent = area_intersect / area_word
 
-    cv2.drawContours(image=img_mask_highlight, contours=contours, contourIdx=-1,
-                     color=(0, 255, 0), thickness=2, lineType=cv2.LINE_AA)
+    #         if (percent >= 0.5):
+    #             cv2.rectangle(img_ocr_highlight, (rect_word.xmin, rect_word.ymin),
+    #                           (rect_word.xmax, rect_word.ymax), (0, 255, 0), 2)
 
-    img_mask_contour_filled2 = img_mask.copy()
-    contours, hierarchy, = cv2.findContours(
-        img_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-    cv2.drawContours(img_mask_contour_filled2, contours, -1,
-                     (255, 255, 255), cv2.FILLED, 8, hierarchy)
+    # for c in contours:
+    #     x, y, w, h = cv2.boundingRect(c)
+    #     rect_contour = Rectangle(x, y, x+w, y+h)
+    #     cv2.rectangle(img_mask_highlight, (rect_contour.xmin, rect_contour.ymin),
+    #                   (rect_contour.xmax, rect_contour.ymax), (0, 255, 0), 2)
 
-    img_mask_contour_filled3 = img_mask.copy()
-    contours, hierarchy, = cv2.findContours(
-        img_mask, cv2.RETR_CCOMP, cv2.CHAIN_APPROX_SIMPLE)
-    cv2.drawContours(img_mask_contour_filled3, contours, -1,
-                     (255, 255, 255), cv2.FILLED, 8, hierarchy)
+    # cv2.drawContours(image=img_mask_highlight, contours=contours, contourIdx=-1,
+    #                  color=(0, 255, 0), thickness=2, lineType=cv2.LINE_AA)
 
-    box_w = 10
-    box_h = 10
-    threshold_perc = 25
-    threshold = (box_w*box_h*threshold_perc)/100
+    # box_w = 5
+    # box_h = 5
+    # threshold_perc = 25
+    # threshold = (box_w*box_h*threshold_perc)/100
 
-    contours, hierarchy, = cv2.findContours(
-        img_mask, cv2.RETR_CCOMP, cv2.CHAIN_APPROX_SIMPLE)
+    # # ccomp
+    # img_mask_highlight = img_orig.copy()
+    # img_mask_contour_filled = img_mask.copy()
+    # contours, hierarchy, = cv2.findContours(
+    #     img_mask, cv2.RETR_CCOMP, cv2.CHAIN_APPROX_SIMPLE)
+    # # cv2.drawContours(img_mask_contour_filled, contours, -1,
+    # #                  (255, 255, 255), cv2.FILLED, 8, hierarchy)
+    # for idx, c in enumerate(contours):
+    #     # if(hierarchy[0][idx][3] != -1):  # Discard contours that are holes
+    #     #     continue
+    #     cv2.drawContours(img_mask_contour_filled, contours, idx,
+    #                      (255, 255, 255), cv2.FILLED, 8, hierarchy)
+    #     xmin, ymin, w, h = cv2.boundingRect(c)
+    #     xmax = xmin + w
+    #     ymax = ymin + h
 
-    img_mask_contour_filled = img_mask.copy()
-    for idx, c in enumerate(contours):
-        cv2.drawContours(img_mask_contour_filled, contours, idx,
-                         (255, 255, 255), cv2.FILLED, 8, hierarchy)
+    #     # Scan the image with in bounding box
+    #     for x in range(xmin, xmax, box_w):
+    #         for y in range(ymin, ymax, box_h):
+    #             rect_roi = Rectangle(x, y, x+box_w, y+box_h)
+    #             roi = img_mask_contour_filled[y:y+box_h, x:x+box_w]
+    #             count = cv2.countNonZero(roi)
 
-        xmin, ymin, w, h = cv2.boundingRect(c)
-        xmax = xmin + w
-        ymax = ymin + h
+    #             if count > threshold:
+    #                 cv2.rectangle(img_mask_highlight, (rect_roi.xmin, rect_roi.ymin),
+    #                               (rect_roi.xmax, rect_roi.ymax),
+    #                               (255, 0, 0), 1, 8, 0)
 
-        # Scan the image with in bounding box
-        for x in range(xmin, xmax, box_w):
-            for y in range(ymin, ymax, box_h):
-                # Rect roi_rect(j, k, box_w, box_h)
-                # Mat roi = dst(roi_rect)
-                rect_roi = Rectangle(x, y, x+box_w, y+box_h)
-                roi = img_mask_contour_filled[y:y+box_h, x:x+box_w]
-                count = cv2.countNonZero(roi)
+    # # external
+    # img_mask_highlight2 = img_orig.copy()
+    # img_mask_contour_filled2 = img_mask.copy()
+    # contours, hierarchy, = cv2.findContours(
+    #     img_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    # # cv2.drawContours(img_mask_contour_filled2, contours, -1,
+    # #                  (255, 255, 255), cv2.FILLED, 8, hierarchy)
+    # for idx, c in enumerate(contours):
+    #     cv2.drawContours(img_mask_contour_filled2, contours, idx,
+    #                      (255, 255, 255), cv2.FILLED, 8, hierarchy)
+    #     xmin, ymin, w, h = cv2.boundingRect(c)
+    #     xmax = xmin + w
+    #     ymax = ymin + h
 
-                if count > threshold:
-                    cv2.rectangle(img_mask_highlight, (rect_roi.xmin, rect_roi.ymin),
-                                  (rect_roi.xmax, rect_roi.ymax),
-                                  (255, 0, 0), 2, 8, 0)
+    #     # Scan the image with in bounding box
+    #     for x in range(xmin, xmax, box_w):
+    #         for y in range(ymin, ymax, box_h):
+    #             rect_roi = Rectangle(x, y, x+box_w, y+box_h)
+    #             roi = img_mask_contour_filled2[y:y+box_h, x:x+box_w]
+    #             count = cv2.countNonZero(roi)
 
-                    # contours, hierarchy, = cv2.findContours(
-                    #     img_mask_contour_filled, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)
+    #             if count > threshold:
+    #                 cv2.rectangle(img_mask_highlight2, (rect_roi.xmin, rect_roi.ymin),
+    #                               (rect_roi.xmax, rect_roi.ymax),
+    #                               (255, 0, 0), 1, 8, 0)
 
-                    # img_mask_contour_filled_rects = cv2.cvtColor(
-                    #     img_mask_contour_filled.copy(),  cv2.COLOR_GRAY2BGR)
-                    # for c in contours:
-                    #     xmin, ymin, w, h = cv2.boundingRect(c)
-                    #     xmax = xmin + w
-                    #     ymax = ymin + h
-
-                    #     # Scan the image with in bounding box
-                    #     for x in range(xmin, xmax, box_w):
-                    #         for y in range(ymin, ymax, box_h):
-                    #             # Rect roi_rect(j, k, box_w, box_h)
-                    #             # Mat roi = dst(roi_rect)
-                    #             rect_roi = Rectangle(x, y, x+box_w, y+box_h)
-                    #             roi = img_mask_contour_filled[y:y+box_h, x:x+box_w]
-                    #             count = cv2.countNonZero(roi)
-
-                    #             # cv2.rectangle(img_mask_contour_filled_rects, (rect_roi.xmin, rect_roi.ymin),
-                    #             #               (rect_roi.xmax, rect_roi.ymax),
-                    #             #               (255, 0, 0), cv2.FILLED, 8, 0)
-                    #             if count > threshold:
-                    #                 cv2.rectangle(img_mask_contour_filled_rects, (rect_roi.xmin, rect_roi.ymin),
-                    #                               (rect_roi.xmax, rect_roi.ymax),
-                    #                               (255, 0, 0), cv2.FILLED, 8, 0)
-
-                    # stack images
+    # stack images
     img_ocr_row = np.concatenate(normalize_images(
         (
             img_orig,
-            img_orig,
-            img_orig,
+            # img_orig,
             img_thresh,
-            img_ocr
+            # output,
+            img_orig_all_ocr,
         )), axis=1)
 
     # img_ocr_row = vstack((img_orig, img_thresh, img_ocr))
@@ -221,12 +326,12 @@ def main(args):
     img_contour_row = np.concatenate(normalize_images(
         (
             img_mask,
-            img_mask_highlight,
-            img_mask_contour_filled,
-            img_mask_contour_filled2,
-            img_mask_contour_filled2,
-            # img_mask_contour_filled_rects,
-            # img_ocr_highlight
+            img_orig_rects,
+            img_orig_ocr,
+            # img_orig_ocr,
+            # img_orig_ocr
+            # img_mask_contour_filled3,
+            # img_mask_highlight3,
         )), axis=1)
 
     img_grid = np.concatenate((img_ocr_row, img_contour_row), axis=0)
