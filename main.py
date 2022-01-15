@@ -25,15 +25,31 @@
 # https://www.pyimagesearch.com/2021/05/12/adaptive-thresholding-with-opencv-cv2-adaptivethreshold/
 # https://stackoverflow.com/questions/68107172/opencv-output-of-adaptive-threshold
 # https://stackoverflow.com/questions/61461520/does-anyone-knows-the-meaning-of-output-of-image-to-data-image-to-osd-methods-o
+# https://medium.com/geekculture/tesseract-ocr-understanding-the-contents-of-documents-beyond-their-text-a98704b7c655
+# https://www.opcito.com/blogs/extracting-text-from-images-with-tesseract-ocr-opencv-and-python
+# https://tesseract-ocr.github.io/tessdoc/ImproveQuality.html
 import pprint
 import pytesseract
 from pytesseract import Output
 import cv2
 import numpy as np
 from collections import namedtuple
+import itertools
+import re
+
 Rectangle = namedtuple('Rectangle', ['xmin', 'ymin', 'xmax', 'ymax'])
+Word = namedtuple('Word', ['level', 'page_num',
+                  'block_num', 'par_num', 'line_num', 'word_num', 'top', 'left', 'width', 'height', 'conf', 'text'])
 
 # https://stackoverflow.com/questions/27152904/calculate-overlapped-area-between-two-rectangles
+
+
+class Levels:
+    PAGE = 1
+    BLOCK = 2
+    PARAGRAPH = 3
+    LINE = 4
+    WORD = 5
 
 
 def intersect_area(a, b):
@@ -91,13 +107,14 @@ def mask_image(img_src, lower, upper):
     return img_mask, contours, hierarchy
 
 
-def draw_all_ocr_rectangles(img_result, data):
-    n_boxes = len(data['level'])
+def mark_all_words(img_result, data_ocr):
 
     # draw rectangles for words
-    for i in range(n_boxes):
-        (x, y, w, h) = (data['left'][i], data['top']
-                        [i], data['width'][i], data['height'][i])
+    for i in range(len(data_ocr['text'])):
+        if data_ocr['level'][i] != Levels.WORD:
+            continue
+        (x, y, w, h) = (data_ocr['left'][i], data_ocr['top']
+                        [i], data_ocr['width'][i], data_ocr['height'][i])
         cv2.rectangle(img_result, (x, y), (x + w, y + h), (0, 255, 0), 2)
 
     return img_result
@@ -163,33 +180,118 @@ def draw_contour_rectangles(img_contour, img_result, contours, rect_width=10, re
     return img_result
 
 
-def highlight_ocr(img_contour, img_result, data, threshold_percentage=25):
-    n_boxes = len(data['text'])
+# def extract_words(img_mask, data_ocr, threshold_percentage=25) -> list[Word]:
+#     extracted_words = []
+
+#     for i in range(len(data_ocr['text'])):
+#         (x, y, w, h) = (data_ocr['left'][i], data_ocr['top']
+#                         [i], data_ocr['width'][i], data_ocr['height'][i])
+#         # rect_roi = Rectangle(x, y, x+w, y+h)
+#         rect_threshold = (w * h * threshold_percentage) / 100
+#         img_roi = img_mask[y:y+h, x:x+w]
+#         count = cv2.countNonZero(img_roi)
+
+#         if count > rect_threshold:
+#             word = Word(data_ocr['level'][i], data_ocr['page_num'][i], data_ocr['block_num'][i], data_ocr['par_num'][i], data_ocr['line_num'][i],
+#                         data_ocr['word_num'][i], data_ocr['top'][i], data_ocr['left'][i], data_ocr['width'][i], data_ocr['height'][i], data_ocr['conf'][i], data_ocr['text'][i])
+#             extracted_words.append(word)
+
+#             print("Level: {}; Page: {}; Block: {}; Paragraph: {}; Line: {}; Word: {}; Text: {}".format(
+#                 word.level, word.page_num, word.block_num, word.par_num, word.line_num, word.word_num, word.text))
+
+#     return extracted_words
+
+def find_highlighted_words(img_mask, data_ocr, threshold_percentage=25):
+    # initiliaze new column with false values
+    data_ocr['highlighted'] = [False] * len(data_ocr['text'])
+
+    for i in range(len(data_ocr['text'])):
+        (x, y, w, h) = (data_ocr['left'][i], data_ocr['top']
+                        [i], data_ocr['width'][i], data_ocr['height'][i])
+        # rect_roi = Rectangle(x, y, x+w, y+h)
+        rect_threshold = (w * h * threshold_percentage) / 100
+        img_roi = img_mask[y:y+h, x:x+w]
+        count = cv2.countNonZero(img_roi)
+
+        if count > rect_threshold:
+            data_ocr['highlighted'][i] = True
+
+    return data_ocr
+
+
+def mark_highlighted_words(img_result, data_ocr):
+    # n_boxes = len(data['text'])
     # contours, hierarchy, = cv2.findContours(
     #     img_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
 
     # draw rectangles for words
-    for i in range(n_boxes):
-        (x, y, w, h) = (data['left'][i], data['top']
-                        [i], data['width'][i], data['height'][i])
+    for i in range(len(data_ocr['text'])):
+        if data_ocr['level'][i] != Levels.WORD:
+            continue
+        if not data_ocr['highlighted'][i]:
+            continue
+
+        (x, y, w, h) = (data_ocr['left'][i], data_ocr['top']
+                        [i], data_ocr['width'][i], data_ocr['height'][i])
         rect_roi = Rectangle(x, y, x+w, y+h)
-        rect_threshold = (w * h * threshold_percentage) / 100
 
-        img_roi = img_contour[y:y+h, x:x+w]
-        count = cv2.countNonZero(img_roi)
+        cv2.rectangle(img_result, (rect_roi.xmin, rect_roi.ymin),
+                      (rect_roi.xmax, rect_roi.ymax), (0, 255, 0), 2)
+    # for i in range(len(data['text'])):
+    #     (x, y, w, h) = (data['left'][i], data['top']
+    #                     [i], data['width'][i], data['height'][i])
+    #     rect_roi = Rectangle(x, y, x+w, y+h)
+    #     rect_threshold = (w * h * threshold_percentage) / 100
 
-        if count > rect_threshold:
-            print("Level: {}; Block: {}; Paragraph: {}; Line: {}; Word: {}; Text: {}".format(
-                data['level'][i],
-                data['block_num'][i],
-                data['par_num'][i],
-                data['line_num'][i],
-                data['word_num'][i],
-                data['text'][i]))
-            cv2.rectangle(img_result, (rect_roi.xmin, rect_roi.ymin),
-                          (rect_roi.xmax, rect_roi.ymax), (0, 255, 0), 2)
+    #     img_roi = img_contour[y:y+h, x:x+w]
+    #     count = cv2.countNonZero(img_roi)
+
+    #     if count > rect_threshold:
+    #         print("Level: {}; Page: {}; Block: {}; Paragraph: {}; Line: {}; Word: {}; Text: {}".format(
+    #             data['level'][i],
+    #             data['page_num'][i],
+    #             data['block_num'][i],
+    #             data['par_num'][i],
+    #             data['line_num'][i],
+    #             data['word_num'][i],
+    #             data['text'][i]))
+    #         cv2.rectangle(img_result, (rect_roi.xmin, rect_roi.ymin),
+    #                       (rect_roi.xmax, rect_roi.ymax), (0, 255, 0), 2)
 
     return img_result
+
+
+def words_to_string(data_ocr):
+
+    word_list = []
+    line_breaks = (Levels.PAGE, Levels.BLOCK, Levels.PARAGRAPH, Levels.LINE)
+
+    for i in range(len(data_ocr['text'])):
+        print("Level: {}; Page: {}; Block: {}; Paragraph: {}; Line: {}; Word: {}; Highlighted: {} Text: {}".format(
+            data_ocr['level'][i],
+            data_ocr['page_num'][i],
+            data_ocr['block_num'][i],
+            data_ocr['par_num'][i],
+            data_ocr['line_num'][i],
+            data_ocr['word_num'][i],
+            data_ocr['highlighted'][i],
+            data_ocr['text'][i]))
+
+        if data_ocr['level'][i] in line_breaks:
+            word_list.append("\n")
+            continue
+
+        text = data_ocr['text'][i].strip()
+
+        if text and data_ocr['highlighted'][i]:
+            word_list.append(text + " ")
+
+    # concat all words into one string
+    word_string = "".join(word_list)
+    # repalce consecutive newlines with one newline
+    word_string = re.sub(r'\n+', '\n', word_string).strip()
+
+    return word_string
 
 
 def main(args):
@@ -205,21 +307,43 @@ def main(args):
     data_ocr = pytesseract.image_to_data(
         img_thresh, lang='eng', config='--psm 6', output_type=Output.DICT)
 
-    # draw all ocr rect
-    img_orig_all_ocr = draw_all_ocr_rectangles(img_orig.copy(), data_ocr)
+    # print(data_ocr)
+    # for i in range(len(data_ocr['text'])):
+    #     word = Word(data_ocr['level'][i], data_ocr['page_num'][i], data_ocr['block_num'][i], data_ocr['par_num'][i], data_ocr['line_num'][i],
+    #                 data_ocr['word_num'][i], data_ocr['top'][i], data_ocr['left'][i], data_ocr['width'][i], data_ocr['height'][i], data_ocr['conf'][i], data_ocr['text'][i])
+    #     print("Level: {}; Page: {}; Block: {}; Paragraph: {}; Line: {}; Word: {}; Text: {}".format(
+    #         word.level, word.page_num, word.block_num, word.par_num, word.line_num, word.word_num, word.text))
 
-    # highlight colour range
+    string_ocr = pytesseract.image_to_string(
+        img_thresh, lang='eng', config='--psm 6')
+    print("Start")
+
+    print(string_ocr)
+    print("End")
+
+    # yellow highlight colour range
     hsv_lower = [22, 30, 30]
     hsv_upper = [45, 255, 255]
 
     img_mask, contours, hierachy = mask_image(
         img_orig, hsv_lower, hsv_upper)
 
+    data_ocr = find_highlighted_words(
+        img_mask, data_ocr, threshold_percentage=25)
+
+    # draw all ocr rect
+    img_orig_all_ocr = mark_all_words(img_orig.copy(), data_ocr)
+
     img_orig_rects = draw_contour_rectangles(
         img_mask, img_orig.copy(), contours)
 
-    img_orig_ocr = highlight_ocr(
-        img_mask, img_orig.copy(), data_ocr)
+    img_orig_ocr = mark_highlighted_words(
+        img_orig.copy(), data_ocr)
+
+    str_highlight = words_to_string(data_ocr)
+    print("Start")
+    print(str_highlight)
+    print("End")
 
     # # find connected components
     # contours, hierarchy, = cv2.findContours(
