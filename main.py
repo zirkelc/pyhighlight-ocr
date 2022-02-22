@@ -73,9 +73,9 @@ def threshold_image(img_src):
     """Grayscale image and apply Otsu's threshold"""
     # Grayscale
     img_gray = cv2.cvtColor(img_src, cv2.COLOR_BGR2GRAY)
-    # Binary inverse and Otsu's threshold
-    img_thresh = cv2.threshold(
-        img_gray, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)[1]
+    # Binarisation and Otsu's threshold
+    _, img_thresh = cv2.threshold(
+        img_gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
 
     return img_thresh, img_gray
 
@@ -89,12 +89,12 @@ def mask_image(img_src, lower, upper):
 
     # Color segmentation with lower and upper threshold ranges to obtain a binary image
     img_mask = cv2.inRange(img_hsv, hsv_lower, hsv_upper)
-    # output = cv2.bitwise_and(img_src, img_src, mask=img_mask)
 
     return img_mask, img_hsv
 
 def apply_mask(img_src, img_mask):
-    """Convert image from RGB to HSV and create a mask for given lower and upper boundaries."""
+    """Apply bitwise conjunction of source image and image mask."""
+
     img_result = cv2.bitwise_and(img_src, img_src, mask=img_mask)
 
     return img_result
@@ -104,7 +104,7 @@ def denoise_image(img_src):
     """Denoise image with a morphological transformation."""
 
     # Morphological transformations to remove small noise
-    kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3))
+    kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (5,5))
     img_denoise = cv2.morphologyEx(
         img_src, cv2.MORPH_OPEN, kernel, iterations=1)
 
@@ -123,49 +123,30 @@ def denoise_image(img_src):
 
     return img_denoise #, contours, hierarchy, img_contour
 
-def draw_word_boundings(img_result, data_ocr):
+def draw_word_boundings(img_src, data_ocr, highlighted_words=False):
     """Draw word bounding boxes"""
+
+    # Convert source image to RGB if it's grayscaled
+    img_result = cv2.cvtColor(img_src, cv2.COLOR_GRAY2BGR) if img_src.ndim == 2 else img_src.copy()
 
     # Iterate through all words
     for i in range(len(data_ocr['text'])):
         # Skip for all non-word elements
         if data_ocr['level'][i] != Levels.WORD:
             continue
+        if highlighted_words and not data_ocr['highlighted'][i]:
+            continue
         # Get bounding box position and size of word
         (x, y, w, h) = (data_ocr['left'][i], data_ocr['top']
                         [i], data_ocr['width'][i], data_ocr['height'][i])
-        # Draw bounding box in blue                
-        cv2.rectangle(img_result, (x, y), (x + w, y + h), (0, 255, 0), 2)
+        # Draw bounding box in red                
+        cv2.rectangle(img_result, (x, y), (x + w, y + h), (0, 0, 255), 2)
 
     return img_result
 
 
-# def draw_contour_ocr_rectangles(img_mask, img_result, data):
-#     # find connected components
-#     contours, hierarchy, = cv2.findContours(
-#         img_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)
-#     n_boxes = len(data['level'])
-
-#     for i in range(n_boxes):
-#         (x, y, w, h) = (data['left'][i], data['top']
-#                         [i], data['width'][i], data['height'][i])
-#         rect_word = Rectangle(x, y, x+w, y+h)
-#         area_word = float((rect_word.xmax - rect_word.xmin)
-#                           * (rect_word.ymax - rect_word.ymin))
-#         for c in contours:
-#             x, y, w, h = cv2.boundingRect(c)
-#             rect_contour = Rectangle(x, y, x+w, y+h)
-#             area_intersect = intersect_area(rect_contour, rect_word)
-#             percent = area_intersect / area_word
-
-#             if (percent >= 0.5):
-#                 cv2.rectangle(img_result, (rect_word.xmin, rect_word.ymin),
-#                               (rect_word.xmax, rect_word.ymax), (0, 255, 0), 2)
-
-#     return img_result
-
-
-def draw_boundings(img_src, img_mask):
+def draw_contour_boundings(img_src, img_mask, threshold_area=400):
+    """Draw contour bounding and contour bounding box"""
     # Contour detection
     contours, hierarchy, = cv2.findContours(
         img_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
@@ -175,13 +156,17 @@ def draw_boundings(img_src, img_mask):
     img_box = img_src.copy()
 
     for idx, c in enumerate(contours):
+        # Skip small contours because its probably noise
+        if  cv2.contourArea(c) < threshold_area:
+            continue
+
         # Draw contour in red
-        cv2.drawContours(img_contour, contours, idx, (0, 0, 255), 1, cv2.LINE_4, hierarchy)
+        cv2.drawContours(img_contour, contours, idx, (0, 0, 255), 2, cv2.LINE_4, hierarchy)
 
         # Get bounding box position and size of contour
         x, y, w, h = cv2.boundingRect(c)
         # Draw bounding box in blue
-        cv2.rectangle(img_box, (x, y), (x + w, y + h), (255, 0, 0), 1, cv2.LINE_AA, 0)
+        cv2.rectangle(img_box, (x, y), (x + w, y + h), (255, 0, 0), 2, cv2.LINE_AA, 0)
 
     return img_contour, img_box
 
@@ -222,6 +207,8 @@ def draw_contour_rectangles(img_contour, img_result, rect_width=10, rect_height=
 
 
 def find_highlighted_words(img_mask, data_ocr, threshold_percentage=25):
+    """Find highlighted words by calculating how much of the words area contains white pixels compared to balack pixels."""
+
     # Initiliaze new column for highlight indicator
     data_ocr['highlighted'] = [False] * len(data_ocr['text'])
 
@@ -260,20 +247,85 @@ def mark_highlighted_words(img_result, data_ocr):
     return img_result
 
 
+def draw_text(
+    img,
+    *,
+    text,
+    uv_top_left,
+    color=(255, 255, 255),
+    fontScale=0.5,
+    thickness=1,
+    fontFace=cv2.FONT_HERSHEY_COMPLEX,
+    outline_color=(0, 0, 0),
+    line_spacing=1.5,
+):
+    """
+    Draws multiline with an outline.
+    https://gist.github.com/EricCousineau-TRI/596f04c83da9b82d0389d3ea1d782592
+    """
+    assert isinstance(text, str)
+
+    uv_top_left = np.array(uv_top_left, dtype=float)
+    assert uv_top_left.shape == (2,)
+
+    for line in text.splitlines():
+        (w, h), _ = cv2.getTextSize(
+            text=line,
+            fontFace=fontFace,
+            fontScale=fontScale,
+            thickness=thickness,
+        )
+        uv_bottom_left_i = uv_top_left + [0, h]
+        org = tuple(uv_bottom_left_i.astype(int))
+
+        if outline_color is not None:
+            cv2.putText(
+                img,
+                text=line,
+                org=org,
+                fontFace=fontFace,
+                fontScale=fontScale,
+                color=outline_color,
+                thickness=thickness * 3,
+                lineType=cv2.LINE_AA,
+            )
+        cv2.putText(
+            img,
+            text=line,
+            org=org,
+            fontFace=fontFace,
+            fontScale=fontScale,
+            color=color,
+            thickness=thickness,
+            lineType=cv2.LINE_AA,
+        )
+
+        uv_top_left += [0, h * line_spacing]
+
+def draw_separation_lines(img_src, images=1):
+    height, width = img_src.shape[:2]
+    img_result = img_src.copy()
+
+    for i in range(1, images):
+        x = int((width / images) * i)
+        img_result = cv2.line(img_result, (x, 0), (x, height), (255, 255, 255), thickness=2)
+
+    return img_result
+
 def words_to_string(data_ocr):
     word_list = []
     line_breaks = (Levels.PAGE, Levels.BLOCK, Levels.PARAGRAPH, Levels.LINE)
 
     for i in range(len(data_ocr['text'])):
-        print("Level: {}; Page: {}; Block: {}; Paragraph: {}; Line: {}; Word: {}; Highlighted: {} Text: {}".format(
-            data_ocr['level'][i],
-            data_ocr['page_num'][i],
-            data_ocr['block_num'][i],
-            data_ocr['par_num'][i],
-            data_ocr['line_num'][i],
-            data_ocr['word_num'][i],
-            data_ocr['highlighted'][i],
-            data_ocr['text'][i]))
+        # print("Level: {}; Page: {}; Block: {}; Paragraph: {}; Line: {}; Word: {}; Highlighted: {} Text: {}".format(
+        #     data_ocr['level'][i],
+        #     data_ocr['page_num'][i],
+        #     data_ocr['block_num'][i],
+        #     data_ocr['par_num'][i],
+        #     data_ocr['line_num'][i],
+        #     data_ocr['word_num'][i],
+        #     data_ocr['highlighted'][i],
+        #     data_ocr['text'][i]))
 
         if data_ocr['level'][i] in line_breaks:
             word_list.append("\n")
@@ -314,12 +366,6 @@ def main(args):
     # get ocr data
     data_ocr = image_to_data(img_thresh)
 
-    string_ocr = pytesseract.image_to_string(
-        img_thresh, lang='eng', config='--psm 6')
-    print("Start")
-    print(string_ocr)
-    print("End")
-
     # yellow highlight colour range
     hsv_lower = [22, 30, 30]
     hsv_upper = [45, 255, 255]
@@ -328,23 +374,30 @@ def main(args):
     img_mask, img_hsv = mask_image(
         img_orig, hsv_lower, hsv_upper)
 
-    # Apply mask on original image
-    img_orig_masked = apply_mask(img_orig, img_mask)
-
     # Noise reduction
-    img_noise = denoise_image(
+    img_mask_denoised = denoise_image(
         img_mask)
 
+    # Apply mask on original image
+    img_orig_masked = apply_mask(img_orig, img_mask=img_mask_denoised)
+
+    # Apply mask on thresholded image
+    img_thresh_masked = apply_mask(img_thresh, img_mask=img_mask_denoised)
+
     data_ocr = find_highlighted_words(
-        img_mask, data_ocr, threshold_percentage=25)
+        img_mask_denoised, data_ocr, threshold_percentage=25)
 
-    img_orig_bounding_contour, img_orig_bounding_box = draw_boundings(img_orig, img_mask=img_noise)
+    # Draw contour boundings and bounding boxes
+    img_orig_bounding_contour, img_orig_bounding_box = draw_contour_boundings(img_orig, img_mask=img_mask_denoised)
 
-    img_thresh_word_boundings = draw_word_boundings(cv2.cvtColor(img_thresh, cv2.COLOR_GRAY2BGR), data_ocr)
-    img_mask_word_boundings = draw_word_boundings(cv2.cvtColor(img_noise, cv2.COLOR_GRAY2BGR), data_ocr)
+    # Draw word boundings for highlighted words
+    img_thresh_word_boundings = draw_word_boundings(img_thresh, data_ocr, highlighted_words=True)
+    img_mask_word_boundings = draw_word_boundings(img_mask_denoised, data_ocr, highlighted_words=True)
+    img_orig_word_boundings = draw_word_boundings(img_orig, data_ocr, highlighted_words=True)
 
     # draw all ocr rect
     img_orig_all_ocr = draw_word_boundings(img_orig.copy(), data_ocr)
+    img_thresh_all_ocr = draw_word_boundings(img_thresh.copy(), data_ocr)
 
     img_orig_rects = draw_contour_rectangles(
         img_mask, img_orig.copy())
@@ -352,10 +405,18 @@ def main(args):
     img_orig_ocr = mark_highlighted_words(
         img_orig.copy(), data_ocr)
 
+
+    string_ocr = pytesseract.image_to_string(
+        img_thresh, lang='eng', config='--psm 6')
+        
+    print("\n\n")
+    print(string_ocr)
+    print("\n\n")
+
     str_highlight = words_to_string(data_ocr)
-    print("Start")
+    print("\n\n")
     print(str_highlight)
-    print("End")
+    print("\n\n")
 
     # stack images
     # img_thresholding = np.concatenate(normalize_images(
@@ -378,6 +439,20 @@ def main(args):
 
     # img_grid = np.concatenate((img_ocr_row, img_contour_row), axis=0)
 
+    height, width = img_orig.shape[:2]
+    img_orig_all_text = np.zeros([height,width,3],dtype=np.uint8)
+    img_orig_all_text.fill(255) 
+    string_ocr = string_ocr.replace("‘", "'")
+    string_ocr = string_ocr.replace("’", "'")
+    draw_text(img_orig_all_text, text=string_ocr, color=(0,0,0), outline_color=None, uv_top_left=(100,100), fontScale=1.5,thickness=2)
+
+    img_orig_highlighted_text = np.zeros([height,width,3],dtype=np.uint8)
+    img_orig_highlighted_text.fill(255) 
+    # string_ocr = string_ocr.replace("‘", "'")
+    # string_ocr = string_ocr.replace("’", "'")
+    draw_text(img_orig_highlighted_text, text=str_highlight, color=(0,0,0), outline_color=None, uv_top_left=(100,500), fontScale=1.5,thickness=2)
+
+
     img_thresholding = np.concatenate(normalize_images(
         (
             img_orig,
@@ -385,6 +460,8 @@ def main(args):
             img_thresh,
         )), axis=1)
 
+    # draw white line between images
+    img_thresholding = draw_separation_lines(img_thresholding, images=3)
     cv2.imshow('thresholding', img_thresholding)
     cv2.imwrite("output/thresholding.png", img_thresholding)
     cv2.waitKey(0)
@@ -392,9 +469,10 @@ def main(args):
     img_extract_all = np.concatenate(normalize_images(
         (
             img_orig_all_ocr,
-            img_orig_all_ocr,
+            img_orig_all_text,
         )), axis=1)
 
+    img_extract_all = draw_separation_lines(img_extract_all, images=2)
     cv2.imshow('extract_all', img_extract_all)
     cv2.imwrite("output/extract_all.png", img_extract_all)
     cv2.waitKey(0)
@@ -407,6 +485,7 @@ def main(args):
             
         )), axis=1)
 
+    img_color_segmentation = draw_separation_lines(img_color_segmentation, images=3)
     cv2.imshow('img_color_segmentation', img_color_segmentation)
     cv2.imwrite("output/img_color_segmentation.png", img_color_segmentation)
     cv2.waitKey(0)
@@ -414,22 +493,23 @@ def main(args):
     img_noise_reduction = np.concatenate(normalize_images(
     (
         img_mask,
-        img_noise
+        img_mask_denoised
         
     )), axis=1)
 
+    img_noise_reduction = draw_separation_lines(img_noise_reduction, images=2)
     cv2.imshow('img_noise_reduction', img_noise_reduction)
     cv2.imwrite("output/img_noise_reduction.png", img_noise_reduction)
     cv2.waitKey(0)
 
     img_orig_and_mask = np.concatenate(normalize_images(
     (
-        img_orig,
-        img_mask,
-        img_orig_masked
+        img_orig_masked,
+        img_thresh_masked
         
     )), axis=1)
 
+    img_orig_and_mask = draw_separation_lines(img_orig_and_mask, images=2)
     cv2.imshow('img_orig_and_mask', img_orig_and_mask)
     cv2.imwrite("output/img_orig_and_mask.png", img_orig_and_mask)
     cv2.waitKey(0)    
@@ -441,19 +521,36 @@ def main(args):
         
     )), axis=1)
 
+    img_contour_and_bounding = draw_separation_lines(img_contour_and_bounding, images=2)
     cv2.imshow('img_contour_and_bounding', img_contour_and_bounding)
     cv2.imwrite("output/img_contour_and_bounding.png", img_contour_and_bounding)
-    cv2.waitKey(0) 
+    cv2.waitKey(0)  
 
     img_final = np.concatenate(normalize_images(
     (
-        img_thresh_word_boundings,
         img_mask_word_boundings,
+        img_orig_word_boundings,
+        img_orig_highlighted_text
         
     )), axis=1)
 
+    img_final = draw_separation_lines(img_final, images=3)
     cv2.imshow('img_final', img_final)
     cv2.imwrite("output/img_final.png", img_final)
+    cv2.waitKey(0)  
+
+    img_title = np.concatenate(normalize_images(
+    (
+        img_orig,
+        img_orig_all_ocr,
+        img_orig_bounding_contour,
+        img_orig_word_boundings
+        
+    )), axis=1)
+
+    img_title = draw_separation_lines(img_title, images=4)
+    cv2.imshow('img_title', img_title)
+    cv2.imwrite("output/img_title.png", img_title)
     cv2.waitKey(0) 
 
 if __name__ == "__main__":
