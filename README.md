@@ -12,12 +12,21 @@ See my original blog post [Extract highlighted text from a book using Python](ht
 
 ## Usage
 
-Install dependencies:
+Install the Tesseract OCR engine (`pytesseract` is only a wrapper around it):
 ```bash
-pip install pytesseract opencv-python numpy
+brew install tesseract
+```
+
+Install the Python dependencies:
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
 ```
 
 Run with an image:
 ```bash
-python main.py path/to/your/book-image.jpg
+python main.py input/animal1.jpeg
 ```
+
+This prints the full OCR text and the extracted highlighted text, and opens a series of windows showing each step of the pipeline. Press any key to advance to the next step. Each step is also saved to `output/`.

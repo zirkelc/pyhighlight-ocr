@@ -31,14 +31,12 @@
 # https://cvexplained.wordpress.com/2020/04/28/color-detection-hsv/
 # https://realpython.com/python-opencv-color-spaces/
 # https://medium.com/globant/maneuvering-color-mask-into-object-detection-fce61bf891d1
-import pprint
 import pytesseract
 from pytesseract import Output
 import cv2
 import numpy as np
 from collections import namedtuple
 import re
-from matplotlib import pyplot as plt
 
 Rectangle = namedtuple('Rectangle', ['xmin', 'ymin', 'xmax', 'ymax'])
 # Word = namedtuple('Word', ['level', 'page_num',
@@ -48,6 +46,11 @@ Rectangle = namedtuple('Rectangle', ['xmin', 'ymin', 'xmax', 'ymax'])
 
 
 class Levels:
+    """Hierarchy levels Tesseract tags each entry in its output data with.
+
+    An entry is either one of the four layout markers or an actual word, so the
+    word entries have to be picked out by level before their boxes are used.
+    """
     PAGE = 1
     BLOCK = 2
     PARAGRAPH = 3
@@ -70,7 +73,16 @@ def normalize_images(images):
 
 
 def threshold_image(img_src):
-    """Grayscale image and apply Otsu's threshold"""
+    """Grayscale image and apply Otsu's threshold.
+
+    Tesseract works best on clean black-on-white input, so the photo is reduced
+    to two tones. Otsu's method is used instead of a fixed cutoff because it
+    derives the threshold per image, by picking the value that best separates
+    the two peaks of the brightness histogram. That adapts to whatever lighting
+    the page was photographed under. Yellow highlighter is bright enough to fall
+    on the white side of the split, so highlighted text survives as black ink on
+    white and stays readable to the OCR.
+    """
     # Grayscale
     img_gray = cv2.cvtColor(img_src, cv2.COLOR_BGR2GRAY)
     # Binarisation and Otsu's threshold
@@ -81,7 +93,31 @@ def threshold_image(img_src):
 
 
 def mask_image(img_src, lower, upper):
-    """Convert image from RGB to HSV and create a mask for given lower and upper boundaries."""
+    """Convert image from RGB to HSV and create a mask for given lower and upper boundaries.
+
+    In RGB there is no single channel that means "yellow": it is a ratio between
+    channels, and all three numbers shift with the lighting, so no fixed range
+    can catch a highlight both in shadow and under glare. HSV splits the pixel
+    into hue (which color), saturation (how vivid) and value (how bright), which
+    isolates color from lighting. Dimming the light drops the value but leaves
+    the hue where it is, so one narrow hue band matches the same highlighter
+    across an unevenly lit page.
+
+    Beware that OpenCV stores hue on a 0-179 scale rather than 0-360, so it fits
+    in a uint8. The caller's yellow band of 22-45 is therefore roughly 44 to 90
+    degrees on a normal color wheel.
+
+    The saturation and value floors carry their own weight. White paper has no
+    meaningful hue, but its hue is still some number that may land inside the
+    yellow band by accident, so it is the saturation floor that actually rejects
+    the page. The value floor likewise rejects near-black pixels (deep shadow and
+    ink). inRange demands all three channels pass and returns a single-channel
+    binary mask: white where the pixel was yellow, black everywhere else.
+
+    Note that yellow is an easy case because it sits in the middle of the hue
+    range. A red highlighter straddles the wrap-around point (both near 0 and
+    near 179) and would need two ranges OR'd together.
+    """
     # RGB to HSV color space conversion
     img_hsv = cv2.cvtColor(img_src, cv2.COLOR_BGR2HSV)
     hsv_lower = np.array(lower, np.uint8)  # Lower HSV value
@@ -93,7 +129,11 @@ def mask_image(img_src, lower, upper):
     return img_mask, img_hsv
 
 def apply_mask(img_src, img_mask):
-    """Apply bitwise conjunction of source image and image mask."""
+    """Apply bitwise conjunction of source image and image mask.
+
+    Keeps the source pixels wherever the mask is white and blacks out the rest.
+    Purely illustrative: the detection logic only ever reads the binary mask.
+    """
 
     img_result = cv2.bitwise_and(img_src, img_src, mask=img_mask)
 
@@ -101,7 +141,16 @@ def apply_mask(img_src, img_mask):
 
 
 def denoise_image(img_src):
-    """Denoise image with a morphological transformation."""
+    """Denoise image with a morphological transformation.
+
+    The raw mask is speckled: JPEG artifacts, warm-tinted paper fibers and stray
+    pixels along letter edges all sneak past the color range test. An opening is
+    an erosion followed by a dilation. The erosion shaves a border off every
+    white region, which annihilates anything thinner than the kernel (the
+    speckles vanish outright), and the dilation grows the survivors back to
+    roughly their original size. Small noise is deleted, large highlight blobs
+    come back essentially unchanged.
+    """
 
     # Morphological transformations to remove small noise
     kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (5,5))
@@ -207,7 +256,21 @@ def draw_contour_rectangles(img_contour, img_result, rect_width=10, rect_height=
 
 
 def find_highlighted_words(img_mask, data_ocr, threshold_percentage=25):
-    """Find highlighted words by calculating how much of the words area contains white pixels compared to balack pixels."""
+    """Find highlighted words by calculating how much of the words area contains white pixels compared to balack pixels.
+
+    This is where the two independent passes meet. The OCR knows where the words
+    are but never saw a color; the mask knows where the yellow is but never saw a
+    letter. Their only contract is pixel coordinates: for each word, crop that
+    word's bounding box out of the mask and count how much of it came back white.
+
+    The area threshold matters. A highlighted word is never fully yellow, because
+    the letters themselves are dark ink that the color range rejects, so they
+    punch word-shaped holes into the mask (the commented-out contour fill in
+    denoise_image is an alternative fix for the same problem, flooding each blob
+    solid). The question is therefore not "is this box yellow" but "is a
+    meaningful fraction of it yellow", which also keeps words that merely brush
+    against a stroke from being counted.
+    """
 
     # Initiliaze new column for highlight indicator
     data_ocr['highlighted'] = [False] * len(data_ocr['text'])
@@ -313,6 +376,14 @@ def draw_separation_lines(img_src, images=1):
     return img_result
 
 def words_to_string(data_ocr):
+    """Concatenate the highlighted words back into readable text.
+
+    Tesseract reports the page, block, paragraph and line markers alongside the
+    words themselves, so the original layout can be rebuilt by emitting a newline
+    whenever one of those markers goes by. Without it the result would be a flat
+    bag of words. Most markers separate text that was not highlighted, which is
+    why the runs of newlines they leave behind get collapsed at the end.
+    """
     word_list = []
     line_breaks = (Levels.PAGE, Levels.BLOCK, Levels.PARAGRAPH, Levels.LINE)
 
@@ -345,6 +416,15 @@ def words_to_string(data_ocr):
 
 
 def image_to_data(img_src):
+    """Run the OCR and return positional data rather than plain text.
+
+    Output.DICT is what makes the whole approach possible: instead of a bare
+    string, Tesseract returns parallel arrays holding each item's level, text and
+    bounding box, and those boxes are what the color mask is later sampled
+    through. Page segmentation mode 6 assumes a single uniform block of text,
+    which suits a book page and stops Tesseract from hunting for columns or other
+    layout structure.
+    """
     return pytesseract.image_to_data(
         img_src, lang='eng', config='--psm 6', output_type=Output.DICT)
 
@@ -355,22 +435,33 @@ def image_to_string(img_src):
 
 
 def main(args):
+    """Extract the highlighted text from a photo of a book page.
+
+    Two passes run over the same photo and never see each other's work. One reads
+    the thresholded image and finds where the words are, without any notion of
+    color. The other reads the original color image and finds where the yellow
+    is, without any notion of text. Joining them by pixel coordinates is what
+    identifies a highlighted word. Everything after that is drawing figures.
+    """
     img_input = str(args.img_input)
 
     # Load image
     img_orig = cv2.imread(img_input)
 
+    # First pass: find where the words are
     # Grayscale and apply Otsu's threshold
     img_thresh, img_gray = threshold_image(img_orig)
 
     # get ocr data
     data_ocr = image_to_data(img_thresh)
 
-    # yellow highlight colour range
+    # Second pass: find where the yellow is
+    # yellow highlight colour range, on OpenCV's 0-179 hue scale
     hsv_lower = [22, 30, 30]
     hsv_upper = [45, 255, 255]
 
-    # Color segmentation
+    # Color segmentation, on the original image because the thresholded one has
+    # no color left to segment
     img_mask, img_hsv = mask_image(
         img_orig, hsv_lower, hsv_upper)
 
@@ -384,9 +475,12 @@ def main(args):
     # Apply mask on thresholded image
     img_thresh_masked = apply_mask(img_thresh, img_mask=img_mask_denoised)
 
+    # Join the two passes: sample the color mask through the OCR bounding boxes
     data_ocr = find_highlighted_words(
         img_mask_denoised, data_ocr, threshold_percentage=25)
 
+    # Everything below is presentation: each stage gets stacked side by side,
+    # shown in its own window and written to output/
     # Draw contour boundings and bounding boxes
     img_orig_bounding_contour, img_orig_bounding_box = draw_contour_boundings(img_orig, img_mask=img_mask_denoised)
 
