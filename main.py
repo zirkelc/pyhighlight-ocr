@@ -45,6 +45,23 @@ Rectangle = namedtuple('Rectangle', ['xmin', 'ymin', 'xmax', 'ymax'])
 # https://stackoverflow.com/questions/27152904/calculate-overlapped-area-between-two-rectangles
 
 
+class Colors:
+    """Highlight colors the detection can be pointed at.
+
+    AUTO ignores hue and picks out whatever is unusually vivid for the page, so
+    it handles any highlighter color. The named colors match a fixed hue range
+    instead, which cannot generalise but is the stricter test when the color is
+    known up front.
+    """
+    AUTO = 'auto'
+    YELLOW = 'yellow'
+
+    # Hue ranges on OpenCV's 0-179 scale, for the named colors only
+    RANGES = {
+        YELLOW: ([22, 30, 30], [45, 255, 255]),
+    }
+
+
 class Levels:
     """Hierarchy levels Tesseract tags each entry in its output data with.
 
@@ -90,6 +107,41 @@ def threshold_image(img_src):
         img_gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
 
     return img_thresh, img_gray
+
+
+def detect_highlights(img_src):
+    """Create a mask of the highlighted areas of any color, without a fixed range.
+
+    Where mask_image has to be told which hue to look for, this asks a different
+    question: which pixels are unusually vivid for this page? Paper and print are
+    close to colorless, so whatever the highlighter's hue happens to be, its
+    saturation stands out from everything around it. Ignoring hue entirely is
+    what makes this work for any color, and it sidesteps the wrap-around problem
+    that a red range would otherwise have.
+
+    The threshold is derived per image, from the page's own saturation mean and
+    standard deviation, so it adapts to the paper and the lighting rather than
+    assuming a fixed level of vividness.
+
+    Note that this is a relative measure and has no notion of "nothing here is
+    highlighted": it always selects roughly the most saturated few percent of the
+    page, so on an unhighlighted page it still returns something. The area
+    threshold in find_highlighted_words is what keeps that from becoming a
+    highlighted word, which is why this stays opt-in rather than the default.
+    """
+    # Only the saturation channel matters, the hue is deliberately ignored
+    img_hsv = cv2.cvtColor(img_src, cv2.COLOR_BGR2HSV)
+    _, s, _ = cv2.split(img_hsv)
+
+    # Adaptive threshold from the page's own saturation distribution
+    sat_mean = np.mean(s)
+    sat_std = np.std(s)
+    sat_thresh = sat_mean + (1.5 * sat_std)
+
+    # Create a binary mask where saturation is higher than threshold
+    _, img_mask = cv2.threshold(s, sat_thresh, 255, cv2.THRESH_BINARY)
+
+    return img_mask, img_hsv
 
 
 def mask_image(img_src, lower, upper):
@@ -140,7 +192,7 @@ def apply_mask(img_src, img_mask):
     return img_result
 
 
-def denoise_image(img_src):
+def denoise_image(img_src, kernel_size=5, iterations=1):
     """Denoise image with a morphological transformation.
 
     The raw mask is speckled: JPEG artifacts, warm-tinted paper fibers and stray
@@ -150,12 +202,16 @@ def denoise_image(img_src):
     speckles vanish outright), and the dilation grows the survivors back to
     roughly their original size. Small noise is deleted, large highlight blobs
     come back essentially unchanged.
+
+    The kernel size is the knob for how aggressive that is. A saturation mask
+    keeps the highlight edges tighter than a color range does, so it needs a
+    smaller kernel to avoid eating the highlight along with the noise.
     """
 
     # Morphological transformations to remove small noise
-    kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (5,5))
+    kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (kernel_size, kernel_size))
     img_denoise = cv2.morphologyEx(
-        img_src, cv2.MORPH_OPEN, kernel, iterations=1)
+        img_src, cv2.MORPH_OPEN, kernel, iterations=iterations)
 
     # img_contour = img_denoise.copy()
 
@@ -439,9 +495,13 @@ def main(args):
 
     Two passes run over the same photo and never see each other's work. One reads
     the thresholded image and finds where the words are, without any notion of
-    color. The other reads the original color image and finds where the yellow
+    color. The other reads the original color image and finds where the highlight
     is, without any notion of text. Joining them by pixel coordinates is what
     identifies a highlighted word. Everything after that is drawing figures.
+
+    Only the second pass depends on args.color, and it hands back the same two
+    images either way, so the rest of the pipeline is unaware of which detection
+    ran.
     """
     img_input = str(args.img_input)
 
@@ -455,19 +515,28 @@ def main(args):
     # get ocr data
     data_ocr = image_to_data(img_thresh)
 
-    # Second pass: find where the yellow is
-    # yellow highlight colour range, on OpenCV's 0-179 hue scale
-    hsv_lower = [22, 30, 30]
-    hsv_upper = [45, 255, 255]
+    # Second pass: find where the highlight is
+    # Both branches run on the original image, because the thresholded one has no
+    # color left to segment, and both yield a raw mask plus the HSV image the
+    # figures below draw
+    if args.color == Colors.AUTO:
+        # Any color, by picking out whatever is unusually vivid for this page
+        img_mask, img_hsv = detect_highlights(img_orig)
 
-    # Color segmentation, on the original image because the thresholded one has
-    # no color left to segment
-    img_mask, img_hsv = mask_image(
-        img_orig, hsv_lower, hsv_upper)
+        # A saturation mask holds its edges tighter than a color range, so it
+        # needs a smaller kernel here
+        img_mask_denoised = denoise_image(img_mask, kernel_size=3)
+    else:
+        # One known color, by its hue range on OpenCV's 0-179 scale
+        hsv_lower, hsv_upper = Colors.RANGES[args.color]
 
-    # Noise reduction
-    img_mask_denoised = denoise_image(
-        img_mask)
+        # Color segmentation
+        img_mask, img_hsv = mask_image(
+            img_orig, hsv_lower, hsv_upper)
+
+        # Noise reduction
+        img_mask_denoised = denoise_image(
+            img_mask)
 
     # Apply mask on original image
     img_orig_masked = apply_mask(img_orig, img_mask=img_mask_denoised)
@@ -654,5 +723,11 @@ if __name__ == "__main__":
 
     parser = ArgumentParser(description=__doc__)
     parser.add_argument('img_input', type=Path, help="Input image")
+    parser.add_argument(
+        '--color',
+        choices=[Colors.AUTO] + sorted(Colors.RANGES),
+        default=Colors.YELLOW,
+        help="Highlight color to look for, or 'auto' to detect any color "
+             "(default: %(default)s)")
     args = parser.parse_args()
     main(args)
